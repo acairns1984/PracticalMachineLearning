@@ -22,19 +22,18 @@ This document outlines the steps I took to build and train my prediction model f
 
 After loading the training data, the first inspection of the data revealed that there were many variables missing data  for many observations where the *new_window* was equal to yes.  The study's website did not provide a description of this variable, so only the observations where the *new_window* was equal to "no" were kept (see code below).
 
-```{r data1}
+Initially, the dataset consisted of ```{r intext, echo = FALSE} ncol(train.data)``` columns, several of which where descriptors of the data (e.g. participant name, time stamp, etc.) - not predicitors. Assuming that the experiment was randomized, in that participants performed each variation of the bicep curl at random times and in random orders, the purpose of these description columns is for records, not prediction.  As such these columns were dropped from the training set.
+
+Additionally, there were variables that were either predominantly NAs or had missing values. These variables were excluded from the set of possible predictors given than they could result in dropping too many observations in order to justify their inclusion.  Doing so resulted in ```{r intext, echo = FALSE} ncol(train.data)``` columns remaining - 52 predictors plus the dependent variable, "classe". Below is also a list of the predictors (and the dependent variable) being considered.
+
+```{r data2}
 #Load the data
-setwd("U:/Coursera/Practical Machine Learning/Week 4 Project/")
+setwd("C:/Users/acairns/Documents/GitHub/PracticalMachineLearning")
 train.data <- read.csv(file = "pml-training.csv", header = TRUE)
 
 #Eliminate observations where "New_window" equals yes
-summary(train.data[train.data$new_window == "no",])
 train.data <- train.data[train.data$new_window == "no",]
-```
 
-Initially, the dataset consisted of ```{r intext, echo = FALSE} ncol(train.data)``` columns, several of which where descriptors of the data (e.g. participant name, time stamp, etc.) - not predicitors. Assuming that the experiment was randomized, in that participants performed each variation of the bicep curl at random times and in random orders, the purpose of these description columns is for records, not prediction.  As such these columns were dropped from the training set.
-
-```{r data2}
 #Drop "descriptor"" columns
 ColToDelete <- c("X", "user_name", "new_window", "raw_timestamp", "num_window", "cvtd_timestamp")
 train.data <- train.data[, -grep(paste(ColToDelete, collapse = "|"), colnames(train.data))]
@@ -46,71 +45,74 @@ train.data <- train.data[,names(NAObs[NAObs == TRUE])]
 #Eliminate variables with missing values
 CompleteObs <- apply(train.data, 2, function(i) length(i[i == ""]) == 0)
 train.data <- train.data[, names(CompleteObs[CompleteObs == TRUE])]
-```
 
-Additionally, there were variables that were either predominantly NAs or had missing values. These variables were excluded from the set of possible predictors given than they could result in dropping too many observations in order to justify their inclusion.  Doing so resulted in ```{r intext, echo = FALSE} ncol(train.data)``` columns remaining - 52 predictors plus the dependent variable, "classe". Below is a list of the predictors (and the dependent variable) being considered:
-
-```{r list, echo = F}
-      colnames(train.data)
+#Predictors being considered
+colnames(train.data)
 ```
 
 ## Model Building
 
-Given that the study attached accelerometers to different parts of the body to assess the movement, many of the measurements will likely be correlated due to the fact the participants had to move, say, their arm and dumbbel in a certain manner in order to perform the exercise a certain way.  I use a random forest model to account for correlation between the various predictors, and because we are looking a classification problem here.
+Given that the study attached accelerometers to different parts of the body to assess the movement, many of the measurements will likely be correlated due to the fact the participants had to move, say, their arm and dumbbell in a certain manner in order to perform the exercise a certain way.  I use a random forest model to account for correlation between the various predictors, and because we are looking a classification problem here.
 
-The next step was to identify the predictors to include in the model. To do this a random forest model was run using all 52 predictors.  An additional benefit to using a random forest model is that it provides an natural way to perform cross-validation.  Since random forest models bootstrap the training data set, observations in our original training set not included in the bootstrapped sample act in the same manner as a test data set.  Thus, we can approximate the test set error by generating out-of-bag (OOB) ("test") errors on those observations not included.  Each predictor was then ranked in terms of their importance, where importance is defined as the average (over m trees) reduction in the Gini index (a measure of node purity) when the node uses a given variable.
+The next step was to identify the predictors to include in the model. To do this a random forest model was run using all 52 predictors.  An additional benefit to using a random forest model is that it provides an natural way to perform cross-validation.  Since random forest models bootstrap the training data set, observations in our original training set not included in the bootstrapped sample act in the same manner as a test data set.  Thus, we can approximate the test set error by generating out-of-bag (OOB) ("test") errors on those observations not included.  Each predictor was then ranked in terms of their importance, where importance is defined as the average (over m trees) reduction in the Gini index (a measure of node purity) when the node uses a given variable. 
+
+The figure 1 below shows the results from the latter exercise (larger values indicate stronger predictors).  
+
+Instead of deciding an arbitrary cut off value for inclusion into the model, I ranked the variables according to it's average reduction in the gini index, started with the 7 most important variables and then iteratively ran models gradually including the next most important predictors.  For each iteration the OOB error was recorded (error = 1 - accuracy or % of incorrect predictions).  This OOB error was plotted against the number of predictors included in the model (see Figure 2).  The top 50 variables resulted in the lowest OOB error rate, and were used in the final model.
 
 ```{r cleaning}
+set.seed(123)
 fit.rf <- randomForest(classe ~ ., data = train.data, ntree = 500, mtry = 7, importance = T)
 varimp <- importance(fit.rf, type = 2) #mean decrease in node purity
 RankVarImp <- as.matrix(cbind(varimp[order(-varimp[,1]), ], Rank = 1:nrow(varimp)))
 RankVarImp
-varImpPlot(fit.rf)
-```
 
-The figure above shows the results from the latter exercise (larger values indicate stronger predictors).  
+### Plot
+varImpPlot(fit.rf, main = "Figure 1: Variable Importance")
 
-```{r code, echo = F}
+### Loop Through various specifications
 Iterations <- lapply(7:nrow(RankVarImp), function(i){
-            print(i)
             varNames <- rownames(RankVarImp[1:i, ])
+            set.seed(i)
             fit <- randomForest(train.data[,varNames], y = train.data$classe, ntree = 500, mtry = 7)
             k <- fit$confusion[,1:5]
             OOBestimate <- 1 - sum(diag(k))/sum(colSums(k))
             OOBestimate
       })
 
+# Variable count with lowest OOB error
 dat <- data.frame(NumofVar = 7:nrow(RankVarImp), OOBError = do.call(c, Iterations))
+dat[dat$OOBError == min(dat$OOBError),]
 
+# Generate Plot
 g <- ggplot(data = dat, aes(x = NumofVar, y = OOBError)) + geom_line(col = "blue")
-g <- g + ggtitle("OOB Error by Variable Count")
-g
+g <- g + ggtitle("Figure 2: OOB Error by Variable Count") + xlab("Number of Predictors Included (According to Rank)")
+g + ylab("OOB Error (1 - accuracy)")
 ```
-
-Instead of deciding an arbitrary cut off value for inclusion into the model, I ranked the variables according to their average reduction in the gini index, started with the 7 most important variables and then iteratively ran models gradually including the next most important predictors.  For each iteration the OOB error was recorded (error = 1 - accuracy or % of incorrect predictions).  This OOB error was plotted against the number of predictors included in the model (see above).  The top 50 variables resulted in the lowest OOB error rate, and were used in the final model.
 
 ## Final Model
 
+Below is the final model.  The out of sample error is 0.27% as reported by printing *fit.rfFinal*.  The code chunk below shows the predictions of the model given the test set.
+
 ```{r finalmodel}
-fit.rfFinal <- randomForest(classe ~ roll_belt + yaw_belt + pitch_forearm + magnet_dumbbell_z + pitch_belt + magnet_dumbbell_y
-                            + roll_forearm + magnet_dumbbell_x + roll_dumbbell + accel_dumbbell_y + accel_belt_z
-                            + magnet_belt_y + magnet_belt_z + accel_forearm_x + accel_dumbbell_z + roll_arm + gyros_belt_z
-                            + magnet_forearm_z + total_accel_dumbbell + yaw_dumbbell + magnet_arm_x + yaw_arm + gyros_dumbbell_y
-                            + magnet_belt_x + accel_forearm_z + accel_dumbbell_x + magnet_arm_y + magnet_forearm_y + magnet_forearm_x
-                            + accel_arm_x + total_accel_belt + yaw_forearm + magnet_arm_z + pitch_arm + accel_arm_y
-                            + accel_forearm_y + gyros_arm_y + gyros_arm_x + accel_arm_z + gyros_dumbbell_x + gyros_forearm_y
-                            + gyros_belt_y + accel_belt_x + total_accel_forearm + total_accel_arm + gyros_belt_x
-                            + gyros_dumbbell_z +  gyros_forearm_z + gyros_forearm_x + gyros_arm_z
+set.seed(12345)
+fit.rfFinal <- randomForest(classe ~ roll_belt + yaw_belt + pitch_forearm + magnet_dumbbell_z + pitch_belt 
+                            + magnet_dumbbell_y + roll_forearm + magnet_dumbbell_x + roll_dumbbell + accel_dumbbell_y 
+                            + accel_belt_z + magnet_belt_y + magnet_belt_z + accel_forearm_x + accel_dumbbell_z 
+                            + roll_arm + gyros_belt_z + magnet_forearm_z + total_accel_dumbbell + yaw_dumbbell 
+                            + magnet_arm_x + yaw_arm + gyros_dumbbell_y + magnet_belt_x + accel_forearm_z 
+                            + accel_dumbbell_x + magnet_arm_y + magnet_forearm_y + magnet_forearm_x + accel_arm_x 
+                            + total_accel_belt + yaw_forearm + magnet_arm_z + pitch_arm + accel_arm_y 
+                            + accel_forearm_y + gyros_arm_y + gyros_arm_x + accel_arm_z + gyros_dumbbell_x 
+                            + gyros_forearm_y + gyros_belt_y + accel_belt_x + total_accel_forearm + total_accel_arm 
+                            + gyros_belt_x + gyros_dumbbell_z +  pitch_dumbbell + accel_belt_y
                             , data = train.data, ntree = 2500, mtry = 7, importance = T)
 
-# Out of Sample Estimate
-k <- fit$confusion[,1:5]
-OOBestimate <- sum(diag(k))/sum(colSums(k))
-OOBestimate
+#Out of sample/OOB Error of Final Model
+fit.rfFinal
 
-#Predicting test set
+### Make Test Set Predictions
 test.data <- read.csv(file = "pml-testing.csv", header = TRUE)
-predict(fit.rfFinal, newdata = test.data)
+pred.val <- predict(fit.rfFinal, newdata = test.data)
+pred.val
 ```
-
-
